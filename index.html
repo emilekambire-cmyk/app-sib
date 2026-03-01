@@ -55,7 +55,7 @@ const sbFetch = (path, opts = {}) => fetch(SUPABASE_URL + "/rest/v1/" + path, {
     "Authorization": "Bearer " + SUPABASE_KEY,
     "Content-Type": "application/json",
     "Prefer": opts.prefer || "return=representation",
-    ...opts.headers || {}
+    ...(opts.headers || {})
   }
 });
 const hashPw = (pw) => btoa("sibee:" + pw + ":sel2026");
@@ -403,12 +403,25 @@ function App() {
   const [pwChangeMsg, setPwChangeMsg] = useState("");
   const [appPassword, setAppPassword] = useState(() => localStorage.getItem("sibee-pw") || APP_PASSWORD);
   const [syncStatus, setSyncStatus] = useState("loading");
+  /* ── Features v4+v5 ── */
+  const [quickPayModal,  setQuickPayModal]  = useState(null);
+  const [formDirty,      setFormDirty]      = useState(false);
+  const [leaveConfirm,   setLeaveConfirm]   = useState(null);
+  const [rapportOnglet,  setRapportOnglet]  = useState("mensuel");
+  const [anneeRapport,   setAnneeRapport]   = useState(() => String((new Date()).getFullYear()));
+  const [clockTime,      setClockTime]      = useState(new Date());
+  const [impayesView,    setImpayesView]    = useState(false);
 
   useEffect(() => {
     let timer;
     const h = () => { clearTimeout(timer); timer = setTimeout(() => setIsMobile(window.innerWidth < 640), 200); };
     window.addEventListener("resize", h);
     return () => { window.removeEventListener("resize", h); clearTimeout(timer); };
+  }, []);
+
+  useEffect(() => {
+    const tick = setInterval(() => setClockTime(new Date()), 1000);
+    return () => clearInterval(tick);
   }, []);
 
   useEffect(() => {
@@ -480,17 +493,44 @@ function App() {
   function handleFournChange(val) {
     setForm((p) => ({ ...p, fournisseur: val }));
     setErrors((p) => ({ ...p, fournisseur: undefined }));
+    setFormDirty(true);
     if (val.trim().length >= 2) { const q = val.toLowerCase(); setFournSugg(fournisseurs.filter((f) => f.nom.toLowerCase().includes(q)).slice(0, 6)); }
     else { setFournSugg([]); }
   }
-  function selectFourn(f) { setForm((p) => ({ ...p, fournisseur:f.nom, telephone:f.telephone||p.telephone, convoyeur:f.convoyeur||p.convoyeur, chauffeur:f.chauffeur||p.chauffeur, matricule:f.matricule||p.matricule })); setErrors((p) => ({ ...p, fournisseur:undefined })); setFournSugg([]); }
-  function handleNew() { const num=genBonNum(bons); setForm(newForm(qualities,num)); setEditId(null); setErrors({}); setView("form"); }
+  function selectFourn(f) { setForm((p) => ({ ...p, fournisseur:f.nom, telephone:f.telephone||p.telephone, convoyeur:f.convoyeur||p.convoyeur, chauffeur:f.chauffeur||p.chauffeur, matricule:f.matricule||p.matricule })); setErrors((p) => ({ ...p, fournisseur:undefined })); setFournSugg([]); setFormDirty(true); }
+  function handleNew() {
+    const num=genBonNum(bons);
+    const base=newForm(qualities,num);
+    // Charger derniers prix mémorisés
+    try {
+      const lp=JSON.parse(localStorage.getItem("sibee-lastprices")||"{}");
+      if(Object.keys(lp).length) {
+        (qualities||[]).forEach(q=>{ if(lp[q.key]) base.rows[q.key]={...base.rows[q.key],prix:lp[q.key]}; });
+      }
+    } catch(e) {}
+    setForm(base); setEditId(null); setErrors({}); setFormDirty(false); setView("form");
+  }
+  function handleDuplicate(bon) {
+    const num=genBonNum(bons);
+    const qs=bon.qualities||qualities;
+    const rows={};
+    qs.forEach(q=>{ rows[q.key]={ qty:"", prix:bon.rows?.[q.key]?.prix||"" }; }); // garde les prix, vide les qté
+    setForm({ ...newForm(qs,num), fournisseur:bon.fournisseur||"", telephone:bon.telephone||"", convoyeur:bon.convoyeur||"", chauffeur:bon.chauffeur||"", matricule:bon.matricule||"", qualities:qs, rows });
+    setEditId(null); setErrors({}); setFormDirty(false); setView("form");
+    toast("📋 Bon dupliqué — ajustez les quantités");
+  }
+
   function handleEdit(bon) {
     const rows = { ...bon.rows }; const qs = bon.qualities || qualities;
     qs.forEach((q) => { if (!rows[q.key]) rows[q.key] = { qty:"", prix:"" }; });
     let paiements = bon.paiements || [];
     if (!paiements.length && (parseFloat(bon.avance)||0)>0) paiements=[{id:Date.now(),date:bon.date||today(),montant:String(parseFloat(bon.avance)||0),note:"Avance initiale"}];
-    setForm({ ...bon, rows, qualities:qs, paiements }); setEditId(bon.id); setErrors({}); setView("form");
+    setForm({ ...bon, rows, qualities:qs, paiements }); setEditId(bon.id); setErrors({}); setFormDirty(false); setView("form");
+  }
+  /* Navigation hors formulaire avec confirmation si dirty */
+  function handleLeaveForm(destination) {
+    if (formDirty) { setLeaveConfirm(destination); }
+    else { setView(destination); setEditId(null); }
   }
   function handleSave() {
     const errs = validate(form);
@@ -505,7 +545,9 @@ function App() {
       const bon = { ...form, id:Date.now(), createdAt:now(), createdBy:"Utilisateur", audit:[auditEntry] };
       const nl = [bon,...bons]; setBons(nl); saveB(nl); saveFourn(bon); bonForPrint=bon;
     }
-    toast(editId ? "✅ Bon modifié avec succès !" : "✅ Bon enregistré avec succès !"); setPrintModal(bonForPrint);
+    toast(editId ? "✅ Bon modifié avec succès !" : "✅ Bon enregistré avec succès !"); setPrintModal(bonForPrint); setFormDirty(false);
+    // Mémoriser les derniers prix par qualité
+    try { const lp={}; (form.qualities||[]).forEach(q=>{ const p=parseFloat(form.rows?.[q.key]?.prix); if(p>0) lp[q.key]=String(p); }); localStorage.setItem("sibee-lastprices", JSON.stringify(lp)); } catch(e) {}
   }
   async function sbDeleteBon(id) { try { await sbFetch("bons?id=eq."+id,{method:"DELETE",prefer:""}); } catch(e){console.error("Supabase delete error:",e);} }
   async function handleDelete(id) { const nl=bons.filter((b)=>b.id!==id); setBons(nl); await sbDeleteBon(id); saveAll(nl,undefined,undefined); setDeleteModal(null); toast("🗑 Bon supprimé.","warn"); }
@@ -549,7 +591,176 @@ function App() {
   const totalVol=bons.reduce((s,b)=>{const qs=b.qualities||DEF_Q;return s+qs.reduce((ss,q)=>ss+(parseFloat(b.rows?.[q.key]?.qty)||0),0);},0);
   const topFourns=Object.entries(bons.reduce((acc,b)=>{if(b.fournisseur){acc[b.fournisseur]=(acc[b.fournisseur]||0)+1;}return acc;},{})).sort((a,b)=>b[1]-a[1]).slice(0,5);
   const volParQ=qualities.map((q)=>({label:q.label,vol:bons.reduce((s,b)=>s+(parseFloat(b.rows?.[q.key]?.qty)||0),0)}));
-  const monthlyData=(() => {
+  /* ── VUE IMPAYÉS ANCIENS ── */
+  const impayesAnciens = bons.filter((b) => {
+    const t=totQ(b.qualities||DEF_Q,b.rows), av=totAv(b)||0;
+    if(t-av<=0) return false;
+    const age=(Date.now()-(b.createdAt?new Date(b.createdAt).getTime():0))/(1000*60*60*24);
+    return age>=30;
+  }).sort((a,b2)=>{
+    const ageA=(Date.now()-(a.createdAt?new Date(a.createdAt).getTime():0));
+    const ageB=(Date.now()-(b2.createdAt?new Date(b2.createdAt).getTime():0));
+    return ageB-ageA; // plus vieux en premier
+  });
+
+  function ImpayesModal() {
+    if(!impayesView) return null;
+    const totalImp = impayesAnciens.reduce((s,b)=>s+Math.max(0,totQ(b.qualities||DEF_Q,b.rows)-totAv(b)),0);
+    return React.createElement("div", { style:{ position:"fixed", inset:0, background:"rgba(0,0,0,0.75)", zIndex:3000, display:"flex", alignItems:"flex-start", justifyContent:"center", padding:"20px 16px", overflowY:"auto" }, onClick:(e)=>e.target===e.currentTarget&&setImpayesView(false) },
+      React.createElement("div", { style:{ background:C.white, borderRadius:8, width:"100%", maxWidth:"min(660px,98vw)", boxShadow:"0 24px 80px rgba(0,0,0,0.45)", animation:"scaleIn .2s ease", marginTop:20 } },
+        /* Header */
+        React.createElement("div", { style:{ background:C.warn, padding:"16px 22px", display:"flex", justifyContent:"space-between", alignItems:"center", borderRadius:"8px 8px 0 0" } },
+          React.createElement("div", null,
+            React.createElement("div", { style:{ color:"#fff", fontFamily:"'Playfair Display',Georgia,serif", fontWeight:700, fontSize:18 } }, "⚠️ Impayés anciens"),
+            React.createElement("div", { style:{ color:"rgba(255,255,255,0.8)", fontSize:11, marginTop:3 } }, impayesAnciens.length, " bon", impayesAnciens.length!==1?"s":"", " en retard · Total : ", fmt(totalImp), " FCFA")
+          ),
+          React.createElement("button", { onClick:()=>setImpayesView(false), style:{ background:"rgba(255,255,255,0.2)", border:"none", color:"#fff", fontSize:22, cursor:"pointer", borderRadius:4, padding:"2px 10px", lineHeight:1 } }, "×")
+        ),
+        /* Liste */
+        React.createElement("div", { style:{ maxHeight:"65vh", overflowY:"auto" } },
+          impayesAnciens.length===0
+            ? React.createElement("div", { style:{ padding:"40px", textAlign:"center", color:C.muted, fontSize:14 } }, "✅ Aucun impayé de plus de 30 jours !")
+            : impayesAnciens.map((b,i) => {
+                const t=totQ(b.qualities||DEF_Q,b.rows), av=totAv(b), r=t-av;
+                const ageJ=Math.round((Date.now()-(b.createdAt?new Date(b.createdAt).getTime():0))/(1000*60*60*24));
+                return React.createElement("div", { key:b.id, style:{ padding:"14px 20px", borderBottom:`1px solid ${C.border}`, background:i%2===0?C.white:C.alt, display:"flex", alignItems:"center", gap:12, flexWrap:"wrap" } },
+                  /* Avatar */
+                  React.createElement("div", { style:{ width:40, height:40, borderRadius:"50%", background:C.warn, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, color:"#fff", fontWeight:800, fontSize:15 } }, (b.fournisseur||"?")[0].toUpperCase()),
+                  /* Info */
+                  React.createElement("div", { style:{ flex:1, minWidth:0 } },
+                    React.createElement("div", { style:{ fontWeight:700, color:C.dark, fontSize:14, display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" } },
+                      b.fournisseur||"—",
+                      b.numero&&React.createElement("span", { style:{ fontSize:10, background:C.goldL, color:C.dark, padding:"1px 7px", borderRadius:10, fontWeight:700 } }, b.numero)
+                    ),
+                    React.createElement("div", { style:{ fontSize:12, color:C.muted, marginTop:3, display:"flex", gap:10, flexWrap:"wrap" } },
+                      React.createElement("span", null, "📅 ", dFmt(b.date)),
+                      React.createElement("span", null, "📞 ", b.telephone||"—"),
+                      React.createElement("span", { style:{ color:C.warn, fontWeight:700 } }, "⏳ ", ageJ, " jours de retard")
+                    )
+                  ),
+                  /* Montants + action */
+                  React.createElement("div", { style:{ textAlign:"right", flexShrink:0 } },
+                    React.createElement("div", { style:{ fontWeight:800, fontSize:15, color:C.warn } }, fmt(r), " F"),
+                    React.createElement("div", { style:{ fontSize:10, color:C.muted, marginBottom:6 } }, "sur ", fmt(t), " F"),
+                    React.createElement("button", { onClick:()=>{ setImpayesView(false); setQuickPayModal(b); }, style:{ padding:"6px 14px", background:"#1a6b3a", color:"#fff", border:"none", borderRadius:3, fontFamily:"inherit", fontSize:11, fontWeight:700, cursor:"pointer" } }, "💳 Encaisser")
+                  )
+                );
+              })
+        ),
+        /* Footer */
+        React.createElement("div", { style:{ padding:"14px 20px", background:C.bg, borderTop:`1px solid ${C.border}`, display:"flex", justifyContent:"space-between", alignItems:"center", borderRadius:"0 0 8px 8px" } },
+          React.createElement("span", { style:{ fontSize:12, color:C.muted } }, "Cliquez sur 💳 Encaisser pour solder un bon"),
+          React.createElement("button", { onClick:()=>setImpayesView(false), style:{ padding:"9px 20px", background:C.dark, color:C.goldL, border:"none", borderRadius:4, fontFamily:"inherit", fontSize:13, fontWeight:700, cursor:"pointer" } }, "Fermer")
+        )
+      )
+    );
+  }
+
+  /* ── QUICK PAY MODAL ── */
+  function QuickPayModal() {
+    if (!quickPayModal) return null;
+    const bon = quickPayModal;
+    const t = totQ(bon.qualities||DEF_Q, bon.rows);
+    const av = totAv(bon);
+    const resteInit = t - av;
+    const [montant, setMontant] = React.useState(resteInit > 0 ? String(resteInit) : "");
+    const [note,    setNote]    = React.useState("Paiement");
+    const [date,    setDate]    = React.useState(today());
+    const [saving,  setSaving]  = React.useState(false);
+
+    const handlePay = async () => {
+      const m = parseFloat(montant);
+      if (!m || m <= 0) return;
+      setSaving(true);
+      const newP = { id:Date.now(), date, montant:String(m), note };
+      const paiements = [...(bon.paiements||[]), newP];
+      const updated = { ...bon, paiements, updatedAt:now(), updatedBy:"Utilisateur",
+        audit:[...(bon.audit||[]), { at:now(), by:"Utilisateur", action:"Paiement rapide" }] };
+      const nl = bons.map((b) => b.id===bon.id ? updated : b);
+      setBons(nl);
+      await saveB(nl);
+      const newReste = t - totAv(updated);
+      toast(newReste <= 0 ? "✅ Bon soldé !" : `💳 Paiement de ${fmt(m)} F enregistré`, "success");
+      setQuickPayModal(null);
+    };
+
+    const resteApres = resteInit - (parseFloat(montant)||0);
+    return React.createElement("div", { style:{ position:"fixed", inset:0, background:"rgba(0,0,0,0.72)", zIndex:3000, display:"flex", alignItems:"center", justifyContent:"center", padding:20 }, onClick:(e)=>e.target===e.currentTarget&&setQuickPayModal(null) },
+      React.createElement("div", { style:{ background:C.white, borderRadius:8, width:"100%", maxWidth:"min(400px,95vw)", overflow:"hidden", boxShadow:"0 24px 80px rgba(0,0,0,0.4)", animation:"scaleIn .2s ease" } },
+        /* Header */
+        React.createElement("div", { style:{ background:C.dark, padding:"16px 22px", display:"flex", justifyContent:"space-between", alignItems:"center" } },
+          React.createElement("div", null,
+            React.createElement("div", { style:{ color:C.goldL, fontWeight:700, fontSize:15 } }, "💳 Paiement rapide"),
+            React.createElement("div", { style:{ color:C.gold, fontSize:11, marginTop:2 } }, bon.fournisseur||"—", bon.numero?" · "+bon.numero:"")
+          ),
+          React.createElement("button", { onClick:()=>setQuickPayModal(null), style:{ background:"none", border:"none", color:C.goldL, fontSize:22, cursor:"pointer" } }, "×")
+        ),
+        /* Résumé */
+        React.createElement("div", { style:{ padding:"14px 22px", background:C.bg, borderBottom:`1px solid ${C.border}`, display:"flex", justifyContent:"space-between", flexWrap:"wrap", gap:12 } },
+          React.createElement("div", null,
+            React.createElement("div", { style:{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:1, marginBottom:3 } }, "Total bon"),
+            React.createElement("div", { style:{ fontWeight:800, fontSize:16, color:C.dark } }, fmt(t), " F")
+          ),
+          React.createElement("div", null,
+            React.createElement("div", { style:{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:1, marginBottom:3 } }, "Déjà payé"),
+            React.createElement("div", { style:{ fontWeight:700, fontSize:16, color:"#1a6b3a" } }, fmt(av), " F")
+          ),
+          React.createElement("div", null,
+            React.createElement("div", { style:{ fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:1, marginBottom:3 } }, "Reste actuel"),
+            React.createElement("div", { style:{ fontWeight:800, fontSize:16, color:resteInit>0?C.warn:C.success } }, fmt(Math.max(0,resteInit)), " F")
+          )
+        ),
+        /* Formulaire paiement */
+        React.createElement("div", { style:{ padding:"20px 22px", display:"flex", flexDirection:"column", gap:14 } },
+          React.createElement("div", null,
+            React.createElement("label", { style:{ display:"block", fontSize:10, fontWeight:700, color:C.dark, textTransform:"uppercase", letterSpacing:1.2, marginBottom:7 } }, "Date du paiement"),
+            React.createElement("input", { type:"date", value:date, onChange:(e)=>setDate(e.target.value), style:{ width:"100%", padding:"10px 14px", border:`1.5px solid ${C.border}`, borderRadius:4, fontFamily:"inherit", fontSize:14, outline:"none" } })
+          ),
+          React.createElement("div", null,
+            React.createElement("div", { style:{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:7 } },
+              React.createElement("label", { style:{ fontSize:10, fontWeight:700, color:C.dark, textTransform:"uppercase", letterSpacing:1.2 } }, "Montant (FCFA)"),
+              resteInit > 0 && React.createElement("button", { type:"button", onClick:()=>setMontant(String(resteInit)), style:{ fontSize:10, padding:"3px 10px", background:C.dark, color:C.goldL, border:"none", borderRadius:3, cursor:"pointer", fontWeight:700 } }, "Tout solder")
+            ),
+            React.createElement("input", { type:"number", value:montant, onChange:(e)=>setMontant(e.target.value), placeholder:"Ex: 150000", style:{ width:"100%", padding:"10px 14px", border:`1.5px solid ${C.border}`, borderRadius:4, fontFamily:"inherit", fontSize:16, fontWeight:700, outline:"none" } })
+          ),
+          React.createElement("div", null,
+            React.createElement("label", { style:{ display:"block", fontSize:10, fontWeight:700, color:C.dark, textTransform:"uppercase", letterSpacing:1.2, marginBottom:7 } }, "Note (optionnel)"),
+            React.createElement("input", { value:note, onChange:(e)=>setNote(e.target.value), placeholder:"Ex: Acompte, solde...", style:{ width:"100%", padding:"10px 14px", border:`1.5px solid ${C.border}`, borderRadius:4, fontFamily:"inherit", fontSize:14, outline:"none" } })
+          ),
+          /* Aperçu reste après paiement */
+          parseFloat(montant) > 0 && React.createElement("div", { style:{ padding:"10px 14px", background:resteApres<=0?"#edf7ee":C.warnBg, borderRadius:4, border:`1px solid ${resteApres<=0?"#b7e0c4":C.border}`, display:"flex", justifyContent:"space-between", alignItems:"center" } },
+            React.createElement("span", { style:{ fontSize:12, fontWeight:600, color:resteApres<=0?"#1a6b3a":C.muted } }, resteApres<=0?"✅ Bon soldé après ce paiement":"Reste après ce paiement"),
+            React.createElement("span", { style:{ fontSize:14, fontWeight:800, color:resteApres<=0?"#1a6b3a":C.warn } }, fmt(Math.max(0,resteApres)), " F")
+          ),
+          React.createElement("button", { onClick:handlePay, disabled:!parseFloat(montant)||parseFloat(montant)<=0||saving, style:{ padding:"13px", background:C.dark, color:C.goldL, border:"none", borderRadius:5, fontFamily:"inherit", fontSize:14, fontWeight:700, cursor:"pointer", opacity:parseFloat(montant)>0&&!saving?1:0.5, boxShadow:"0 4px 16px rgba(92,13,26,0.25)", letterSpacing:.5 } },
+            saving ? "⏳ Enregistrement..." : "💳 Enregistrer ce paiement"
+          )
+        )
+      )
+    );
+  }
+
+  /* ── LEAVE CONFIRM MODAL ── */
+  function LeaveConfirmModal() {
+    if (!leaveConfirm) return null;
+    return React.createElement("div", { style:{ position:"fixed", inset:0, background:"rgba(0,0,0,0.7)", zIndex:4000, display:"flex", alignItems:"center", justifyContent:"center", padding:20 } },
+      React.createElement("div", { style:{ background:C.white, borderRadius:8, width:"100%", maxWidth:"min(360px,95vw)", overflow:"hidden", boxShadow:"0 24px 80px rgba(0,0,0,0.4)", animation:"scaleIn .18s ease" } },
+        React.createElement("div", { style:{ background:"#b8621a", padding:"22px 24px", textAlign:"center" } },
+          React.createElement("div", { style:{ fontSize:40, marginBottom:8 } }, "⚠️"),
+          React.createElement("div", { style:{ color:"#fff", fontWeight:800, fontSize:17, fontFamily:"'Playfair Display',Georgia,serif" } }, "Modifications non sauvegardées")
+        ),
+        React.createElement("div", { style:{ padding:"18px 24px", background:C.bg, borderBottom:`1px solid ${C.border}`, textAlign:"center" } },
+          React.createElement("p", { style:{ fontSize:13, color:C.muted, lineHeight:1.6 } }, "Vous avez des modifications en cours.", React.createElement("br"), "Si vous quittez maintenant, elles seront ", React.createElement("strong", { style:{ color:C.warn } }, "perdues définitivement"), ".")
+        ),
+        React.createElement("div", { style:{ padding:"16px 24px", display:"flex", gap:10 } },
+          React.createElement("button", { onClick:()=>setLeaveConfirm(null), style:{ flex:1, padding:"12px", background:"transparent", color:C.muted, border:`1.5px solid ${C.border}`, borderRadius:4, fontFamily:"inherit", fontSize:13, fontWeight:600, cursor:"pointer" } }, "← Continuer l'édition"),
+          React.createElement("button", { onClick:()=>{ setView(leaveConfirm); setEditId(null); setFormDirty(false); setLeaveConfirm(null); }, style:{ flex:1, padding:"12px", background:C.warn, color:"#fff", border:"none", borderRadius:4, fontFamily:"inherit", fontSize:13, fontWeight:700, cursor:"pointer" } }, "Quitter sans sauvegarder")
+        )
+      )
+    );
+  }
+
+  const monthlyData = (() => {
     const months=[],now2=new Date();
     for(let i=5;i>=0;i--){const d=new Date(now2.getFullYear(),now2.getMonth()-i,1);const key=d.toISOString().slice(0,7);const label=d.toLocaleDateString("fr-FR",{month:"short",year:"2-digit"});const mb=bons.filter((b)=>b.date?.startsWith(key));const total2=mb.reduce((s,b)=>s+totQ(b.qualities||DEF_Q,b.rows),0);const encaisse=mb.reduce((s,b)=>s+(totAv(b)||0),0);months.push({label,total:total2,encaisse,count:mb.length});}
     return months;
@@ -992,9 +1203,8 @@ function App() {
   /* ─── DASHBOARD ─── */
   function Dashboard() {
     const maxVol=Math.max(...volParQ.map((v)=>v.vol),1);
-    const nowCi=new Date();
-    const heureCi=nowCi.toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit",second:"2-digit",timeZone:"Africa/Abidjan"});
-    const dateCi=nowCi.toLocaleDateString("fr-FR",{weekday:"long",day:"numeric",month:"long",year:"numeric",timeZone:"Africa/Abidjan"});
+    const heureCi=clockTime.toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit",second:"2-digit",timeZone:"Africa/Abidjan"});
+    const dateCi=clockTime.toLocaleDateString("fr-FR",{weekday:"long",day:"numeric",month:"long",year:"numeric",timeZone:"Africa/Abidjan"});
     return React.createElement("div", { style:wrap },
       /* En-tête */
       React.createElement("div", { style:{ marginBottom:24, display:"flex", alignItems:"flex-start", justifyContent:"space-between", gap:12, flexWrap:"wrap" } },
@@ -1016,10 +1226,10 @@ function App() {
         [
           { label:"Bons ce mois", val:bonsMonth.length, icon:"📋", sub:`${bons.length} total`, accent:false },
           { label:"Volume encaissé", val:fmt(totalMonth)+" F", icon:"💰", sub:"ce mois", accent:false },
-          { label:"Restes à payer", val:fmt(totalReste)+" F", icon:"⏳", sub:"tous bons", accent:totalReste>0 },
+          { label:"Restes à payer", val:fmt(totalReste)+" F", icon:"⏳", sub: impayesAnciens.length>0 ? `⚠ ${impayesAnciens.length} en retard +30j` : "tous bons", accent:totalReste>0, clickFn: impayesAnciens.length>0 ? ()=>setImpayesView(true) : null },
           { label:"Volume ignames", val:fmt(Math.round(totalVol))+" Kg", icon:"🌿", sub:"total cumulé", accent:false }
         ].map((k,ki) =>
-          React.createElement("div", { key:k.label, className:`kpi-card${k.accent?" alert":""}`, style:{ animationDelay:`${ki*0.07}s`, borderLeftColor:k.accent?C.warn:C.dark } },
+          React.createElement("div", { key:k.label, onClick:k.clickFn||undefined, className:`kpi-card${k.accent?" alert":""}`, style:{ animationDelay:`${ki*0.07}s`, borderLeftColor:k.accent?C.warn:C.dark, cursor:k.clickFn?"pointer":"default" } },
             React.createElement("div", { style:{ fontSize:26, marginBottom:8 } }, k.icon),
             React.createElement("div", { style:{ fontWeight:800, fontSize:"clamp(15px,3vw,20px)", color:k.accent?C.warn:C.dark, lineHeight:1.1 } }, k.val),
             React.createElement("div", { style:{ fontSize:10, color:C.muted, marginTop:5, textTransform:"uppercase", letterSpacing:1.2 } }, k.label),
@@ -1099,7 +1309,7 @@ function App() {
           React.createElement("span", null, "📋 Derniers bons enregistrés"),
           React.createElement(Btn, { v:"ghost", sm:true, onClick:()=>setView("list") }, "Voir tout →")
         ),
-        bons.slice(0,5).map((b,bi) => {
+        [...bons].sort((a,b)=>(b.date||b.createdAt||"").localeCompare(a.date||a.createdAt||"")).slice(0,5).map((b,bi) => {
           const qs=b.qualities||DEF_Q,t=totQ(qs,b.rows),av=totAv(b)||0,r=t-av;
           return React.createElement("div", { key:b.id, style:{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"12px 18px", borderBottom:`1px solid ${C.border}`, gap:10, flexWrap:"wrap", background:bi%2===0?C.white:C.alt, transition:"background .1s" } },
             React.createElement("div", null,
@@ -1124,7 +1334,7 @@ function App() {
   function FormView() {
     return React.createElement("div", { style:wrap },
       React.createElement("div", { style:{ display:"flex", alignItems:"center", gap:14, marginBottom:22, flexWrap:"wrap" } },
-        React.createElement(Btn, { v:"ghost", onClick:()=>{ setView("list"); setEditId(null); } }, "← Retour"),
+        React.createElement(Btn, { v:"ghost", onClick:()=>handleLeaveForm("list") }, "← Retour"),
         React.createElement("div", null,
           React.createElement("div", { style:{ fontFamily:"'Playfair Display',Georgia,serif", fontSize:"clamp(18px,4vw,25px)", color:C.dark, fontWeight:700 } }, editId?"✏️ Modifier le bon":"✚ Nouveau bon"),
           form.numero&&React.createElement("div", { style:{ fontSize:12, color:C.gold, fontWeight:700, marginTop:2, letterSpacing:1 } }, form.numero)
@@ -1148,7 +1358,7 @@ function App() {
               React.createElement("div", { style:iLabel }, label),
               React.createElement("div", { style:{ padding:"9px 14px", position:"relative" } },
                 type==="date"&&React.createElement("div", { style:{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" } },
-                  React.createElement("input", { type:"date", style:{ ...inp, padding:"2px 0", flex:1 }, value:form.date||"", onChange:(e)=>{ setForm((p)=>({...p,date:e.target.value})); setErrors((p)=>({...p,date:undefined})); } }),
+                  React.createElement("input", { type:"date", style:{ ...inp, padding:"2px 0", flex:1 }, value:form.date||"", onChange:(e)=>{ setForm((p)=>({...p,date:e.target.value})); setErrors((p)=>({...p,date:undefined})); setFormDirty(true); } }),
                   !editId&&React.createElement("button", { type:"button", onClick:()=>setForm((p)=>({...p,date:today()})), style:{ fontSize:10, background:C.goldL, color:C.dark, border:"none", borderRadius:2, padding:"3px 9px", cursor:"pointer", fontWeight:700, whiteSpace:"nowrap", letterSpacing:.5 } }, "📅 Aujourd'hui")
                 ),
                 type==="fourn"&&React.createElement(React.Fragment, null,
@@ -1160,7 +1370,7 @@ function App() {
                     ))
                   )
                 ),
-                type!=="date"&&type!=="fourn"&&React.createElement("input", { style:inp, type, value:form[key]||"", onChange:(e)=>{ setForm((p)=>({...p,[key]:e.target.value})); setErrors((p)=>({...p,[key]:undefined})); }, placeholder:label }),
+                type!=="date"&&type!=="fourn"&&React.createElement("input", { style:inp, type, value:form[key]||"", onChange:(e)=>{ setForm((p)=>({...p,[key]:e.target.value})); setErrors((p)=>({...p,[key]:undefined})); setFormDirty(true); }, placeholder:label }),
                 React.createElement("div", { style:{ fontSize:11, color:C.warn, height:16, marginTop:2, lineHeight:"16px" } },
                   key==="date"&&errors.date?"⚠ "+errors.date:key==="_fourn"&&errors.fournisseur?"⚠ "+errors.fournisseur:errors[key]?"⚠ "+errors[key]:""
                 )
@@ -1178,7 +1388,7 @@ function App() {
         React.createElement("div", { className:"tbl-wrap" },
           React.createElement("div", { className:"tbl-min" },
             TableHead(),
-            (form.qualities||[]).map((q,i) => TRow({ key:q.key, q, i, value:form.rows[q.key], onChange:(f,v)=>{ setForm((p)=>({...p,rows:{...p.rows,[q.key]:{...p.rows[q.key],[f]:v}}})); setErrors((p)=>({...p,rows:undefined})); } }))
+            (form.qualities||[]).map((q,i) => TRow({ key:q.key, q, i, value:form.rows[q.key], onChange:(f,v)=>{ setForm((p)=>({...p,rows:{...p.rows,[q.key]:{...p.rows[q.key],[f]:v}}})); setErrors((p)=>({...p,rows:undefined})); setFormDirty(true); } }))
           )
         ),
         Totaux({ t:total, av:avance, r:reste, edit:true }),
@@ -1279,9 +1489,12 @@ function App() {
               React.createElement("div", { className:"bon-act" },
                 React.createElement(Btn, { v:"primary", sm:true, onClick:()=>setPreviewBon(bon) }, "👁 Aperçu"),
                 React.createElement(Btn, { v:"outline", sm:true, onClick:()=>handleEdit(bon) }, "✏️ Modifier"),
+                React.createElement(Btn, { v:"ghost", sm:true, onClick:()=>handleDuplicate(bon) }, "📋 Dupliquer"),
+                r > 0 && React.createElement("button", { onClick:()=>setQuickPayModal(bon), style:{ padding:"5px 13px", background:"#1a6b3a", color:"#fff", border:"none", borderRadius:3, fontFamily:"inherit", fontSize:12, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", gap:5, boxShadow:"0 2px 8px rgba(26,107,58,0.25)" } }, "💳 Payer ", React.createElement("span", { style:{ opacity:.8, fontWeight:500 } }, fmt(r), " F")),
+                r <= 0 && t > 0 && React.createElement("span", { style:{ padding:"5px 12px", background:"#edf7ee", color:"#1a6b3a", borderRadius:3, fontSize:11, fontWeight:700, border:"1px solid #b7e0c4" } }, "✅ Soldé"),
                 React.createElement(Btn, { v:"word", sm:true, onClick:()=>generateWordDoc(bon) }, "📄 Word"),
                 React.createElement("div", { style:{ flex:1 } }),
-                React.createElement(Btn, { v:"danger", sm:true, onClick:()=>setDeleteModal(bon.id) }, "🗑 Supprimer")
+                React.createElement(Btn, { v:"danger", sm:true, onClick:()=>setDeleteModal(bon.id) }, "🗑")
               )
             );
           })
@@ -1290,70 +1503,214 @@ function App() {
 
   /* ─── RAPPORT VIEW ─── */
   function RapportView() {
-    const mois=moisRapport, setMois=setMoisRapport;
-    const bonsMois=bons.filter((b)=>b.date?.startsWith(mois));
-    const totalFacture=bonsMois.reduce((s,b)=>s+totQ(b.qualities||DEF_Q,b.rows),0);
-    const totalEncaisse=bonsMois.reduce((s,b)=>s+totAv(b),0);
-    const totalReste2=totalFacture-totalEncaisse;
-    const nomMois=(new Date(mois+"-15")).toLocaleDateString("fr-FR",{month:"long",year:"numeric"});
+    const onglet = rapportOnglet, setOnglet = setRapportOnglet;
+    const mois = moisRapport, setMois = setMoisRapport;
+    const annee = anneeRapport, setAnnee = setAnneeRapport;
+
+    /* ── DONNÉES MENSUEL ── */
+    const bonsMois = bons.filter((b) => b.date?.startsWith(mois));
+    const totalFactureMois = bonsMois.reduce((s,b) => s+totQ(b.qualities||DEF_Q,b.rows), 0);
+    const totalEncaisseMois = bonsMois.reduce((s,b) => s+totAv(b), 0);
+    const totalResteMois = totalFactureMois - totalEncaisseMois;
+    const nomMois = (new Date(mois+"-15")).toLocaleDateString("fr-FR",{month:"long",year:"numeric"});
+
+    /* ── DONNÉES ANNUEL ── */
+    const bonsAnnee = bons.filter((b) => b.date?.startsWith(annee));
+    const moisDispos = Array.from({length:12},(_,i)=>{
+      const m = String(i+1).padStart(2,"0");
+      const key = `${annee}-${m}`;
+      const bb = bons.filter((b)=>b.date?.startsWith(key));
+      const tf = bb.reduce((s,b)=>s+totQ(b.qualities||DEF_Q,b.rows),0);
+      const te = bb.reduce((s,b)=>s+totAv(b),0);
+      return { key, label:(new Date(key+"-15")).toLocaleDateString("fr-FR",{month:"short"}), nbBons:bb.length, facture:tf, encaisse:te, reste:tf-te };
+    });
+    const totalFactureAnnee = bonsAnnee.reduce((s,b)=>s+totQ(b.qualities||DEF_Q,b.rows),0);
+    const totalEncaisseAnnee = bonsAnnee.reduce((s,b)=>s+totAv(b),0);
+    const totalResteAnnee = totalFactureAnnee - totalEncaisseAnnee;
+    const tauxRecouvrement = totalFactureAnnee > 0 ? Math.round((totalEncaisseAnnee/totalFactureAnnee)*100) : 0;
+    /* top fournisseurs annee */
+    const fournAnnee = Object.entries(bonsAnnee.reduce((acc,b)=>{
+      const k=b.fournisseur||"—"; const t=totQ(b.qualities||DEF_Q,b.rows),av=totAv(b);
+      if(!acc[k]) acc[k]={count:0,total:0,encaisse:0};
+      acc[k].count++; acc[k].total+=t; acc[k].encaisse+=av; return acc;
+    },{})).sort((a,b2)=>b2[1].total-a[1].total);
+    const maxBarAnnee = Math.max(...moisDispos.map(m=>m.facture), 1);
+
+    /* ── PRINT MENSUEL ── */
     const printRapport = () => {
       const rows=bonsMois.map((b)=>{const t=totQ(b.qualities||DEF_Q,b.rows),av=totAv(b);return `<tr><td>${b.numero||"—"}</td><td>${dFmt(b.date)}</td><td><strong>${b.fournisseur||"—"}</strong></td><td>${b.convoyeur||"—"}</td><td style="text-align:right">${fmt(t)} F</td><td style="text-align:right;color:#1a6b3a">${fmt(av)} F</td><td style="text-align:right;color:${t-av>0?"#c0392b":"#1a6b3a"};font-weight:700">${fmt(Math.max(0,t-av))} F</td></tr>`;}).join("");
-      const statsFourn=Object.entries(bonsMois.reduce((acc,b)=>{const k=b.fournisseur||"—";const t=totQ(b.qualities||DEF_Q,b.rows),av=totAv(b);if(!acc[k])acc[k]={count:0,total:0,encaisse:0};acc[k].count++;acc[k].total+=t;acc[k].encaisse+=av;return acc;},{})).sort((a2,b)=>b[1].total-a2[1].total).map(([nom,s])=>{const r=s.total-s.encaisse;return `<tr><td><strong>${nom}</strong></td><td style="text-align:center">${s.count}</td><td style="text-align:right">${fmt(s.total)} F</td><td style="text-align:right;color:#1a6b3a">${fmt(s.encaisse)} F</td><td style="text-align:right;color:${r>0?"#c0392b":"#1a6b3a"};font-weight:700">${fmt(Math.max(0,r))} F</td><td style="text-align:center"><span style="padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;background:${r<=0?"rgba(26,107,58,0.1)":"rgba(192,57,43,0.1)"};color:${r<=0?"#1a6b3a":"#c0392b"}">${r<=0?"✅ Soldé":"⏳ En attente"}</span></td></tr>`;}).join("");
+      const statsFourn=Object.entries(bonsMois.reduce((acc,b)=>{const k=b.fournisseur||"—";const t=totQ(b.qualities||DEF_Q,b.rows),av=totAv(b);if(!acc[k])acc[k]={count:0,total:0,encaisse:0};acc[k].count++;acc[k].total+=t;acc[k].encaisse+=av;return acc;},{})).sort((a2,b2)=>b2[1].total-a2[1].total).map(([nom,s])=>{const r=s.total-s.encaisse;return `<tr><td><strong>${nom}</strong></td><td style="text-align:center">${s.count}</td><td style="text-align:right">${fmt(s.total)} F</td><td style="text-align:right;color:#1a6b3a">${fmt(s.encaisse)} F</td><td style="text-align:right;color:${r>0?"#c0392b":"#1a6b3a"};font-weight:700">${fmt(Math.max(0,r))} F</td><td style="text-align:center"><span style="padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;background:${r<=0?"rgba(26,107,58,0.1)":"rgba(192,57,43,0.1)"};color:${r<=0?"#1a6b3a":"#c0392b"}">${r<=0?"✅ Soldé":"⏳ En attente"}</span></td></tr>`;}).join("");
       const dateGen=(new Date()).toLocaleDateString("fr-FR",{weekday:"long",day:"numeric",month:"long",year:"numeric",timeZone:"Africa/Abidjan"});
-      const html=`<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>Rapport SIBEE — ${nomMois}</title><style>*{box-sizing:border-box;margin:0;padding:0;}body{font-family:Georgia,serif;color:#333;padding:24px;font-size:13px;}.header{text-align:center;padding-bottom:16px;border-bottom:3px solid #5C0D1A;margin-bottom:20px;}.logo{font-size:30px;font-weight:800;color:#5C0D1A;letter-spacing:4px;}.sub{font-size:10px;color:#8a6060;letter-spacing:3px;text-transform:uppercase;margin-top:4px;}.titre{font-size:18px;color:#333;margin-top:12px;font-weight:600;}.date-gen{font-size:11px;color:#8a6060;margin-top:4px;}.kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:20px 0;}.kpi{background:#FAF3EE;border-left:4px solid #5C0D1A;padding:12px;border-radius:4px;}.kpi-val{font-size:18px;font-weight:800;color:#5C0D1A;}.kpi-label{font-size:10px;color:#8a6060;text-transform:uppercase;letter-spacing:1px;margin-top:4px;}h2{color:#5C0D1A;font-size:13px;margin:20px 0 8px;text-transform:uppercase;letter-spacing:1px;border-bottom:1px solid #D4B8B0;padding-bottom:6px;}table{width:100%;border-collapse:collapse;margin-bottom:20px;font-size:11px;}th{background:#5C0D1A;color:#EDD98A;padding:7px 10px;text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;}td{padding:7px 10px;border-bottom:1px solid #D4B8B0;}tr:nth-child(even) td{background:#FDF0ED;}.total-row td{background:#5C0D1A!important;color:#EDD98A;font-weight:700;}.signatures{margin-top:40px;display:grid;grid-template-columns:1fr 1fr;gap:40px;}.sig{border-top:2px solid #5C0D1A;padding-top:8px;text-align:center;font-size:11px;color:#555;}.print-btn{margin-top:20px;padding:12px 28px;background:#5C0D1A;color:#EDD98A;border:none;border-radius:4px;cursor:pointer;font-size:14px;font-weight:700;width:100%;}@media print{.print-btn{display:none;}body{padding:12px;}}</style></head><body><div class="header"><div class="logo">SIBEE</div><div class="sub">Import-Export · Commerce de produits agricoles</div><div class="titre">Rapport mensuel — ${nomMois}</div><div class="date-gen">Généré le ${dateGen}</div></div><div class="kpis"><div class="kpi"><div class="kpi-val">${bonsMois.length}</div><div class="kpi-label">Bons émis</div></div><div class="kpi"><div class="kpi-val">${fmt(totalFacture)} FCFA</div><div class="kpi-label">Total facturé</div></div><div class="kpi"><div class="kpi-val">${fmt(Math.max(0,totalReste2))} FCFA</div><div class="kpi-label">Reste à encaisser</div></div></div><h2>Récapitulatif par fournisseur</h2><table><thead><tr><th>Fournisseur</th><th>Bons</th><th>Total</th><th>Encaissé</th><th>Reste</th><th>Statut</th></tr></thead><tbody>${statsFourn}</tbody></table><h2>Détail des bons</h2><table><thead><tr><th>N° Bon</th><th>Date</th><th>Fournisseur</th><th>Convoyeur</th><th>Total</th><th>Encaissé</th><th>Reste</th></tr></thead><tbody>${rows}<tr class="total-row"><td colspan="4">TOTAUX</td><td style="text-align:right">${fmt(totalFacture)} F</td><td style="text-align:right">${fmt(totalEncaisse)} F</td><td style="text-align:right">${fmt(Math.max(0,totalReste2))} F</td></tr></tbody></table><div class="signatures"><div class="sig">Signature Responsable</div><div class="sig">Cachet SIBEE</div></div><button class="print-btn" onclick="window.print()">🖨 Imprimer / Enregistrer en PDF</button></body></html>`;
+      const html=`<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>Rapport SIBEE — ${nomMois}</title><style>*{box-sizing:border-box;margin:0;padding:0;}body{font-family:Georgia,serif;color:#333;padding:24px;font-size:13px;}.header{text-align:center;padding-bottom:16px;border-bottom:3px solid #5C0D1A;margin-bottom:20px;}.logo{font-size:30px;font-weight:800;color:#5C0D1A;letter-spacing:4px;}.sub{font-size:10px;color:#8a6060;letter-spacing:3px;text-transform:uppercase;margin-top:4px;}.titre{font-size:18px;color:#333;margin-top:12px;font-weight:600;}.date-gen{font-size:11px;color:#8a6060;margin-top:4px;}.kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:20px 0;}.kpi{background:#FAF3EE;border-left:4px solid #5C0D1A;padding:12px;border-radius:4px;}.kpi-val{font-size:18px;font-weight:800;color:#5C0D1A;}.kpi-label{font-size:10px;color:#8a6060;text-transform:uppercase;letter-spacing:1px;margin-top:4px;}h2{color:#5C0D1A;font-size:13px;margin:20px 0 8px;text-transform:uppercase;letter-spacing:1px;border-bottom:1px solid #D4B8B0;padding-bottom:6px;}table{width:100%;border-collapse:collapse;margin-bottom:20px;font-size:11px;}th{background:#5C0D1A;color:#EDD98A;padding:7px 10px;text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;}td{padding:7px 10px;border-bottom:1px solid #D4B8B0;}tr:nth-child(even) td{background:#FDF0ED;}.total-row td{background:#5C0D1A!important;color:#EDD98A;font-weight:700;}.signatures{margin-top:40px;display:grid;grid-template-columns:1fr 1fr;gap:40px;}.sig{border-top:2px solid #5C0D1A;padding-top:8px;text-align:center;font-size:11px;color:#555;}.print-btn{margin-top:20px;padding:12px 28px;background:#5C0D1A;color:#EDD98A;border:none;border-radius:4px;cursor:pointer;font-size:14px;font-weight:700;width:100%;}@media print{.print-btn{display:none;}body{padding:12px;}}</style></head><body><div class="header"><div class="logo">SIBEE</div><div class="sub">Import-Export · Commerce de produits agricoles</div><div class="titre">Rapport mensuel — ${nomMois}</div><div class="date-gen">Généré le ${dateGen}</div></div><div class="kpis"><div class="kpi"><div class="kpi-val">${bonsMois.length}</div><div class="kpi-label">Bons émis</div></div><div class="kpi"><div class="kpi-val">${fmt(totalFactureMois)} FCFA</div><div class="kpi-label">Total facturé</div></div><div class="kpi"><div class="kpi-val">${fmt(Math.max(0,totalResteMois))} FCFA</div><div class="kpi-label">Reste à encaisser</div></div></div><h2>Récapitulatif par fournisseur</h2><table><thead><tr><th>Fournisseur</th><th>Bons</th><th>Total</th><th>Encaissé</th><th>Reste</th><th>Statut</th></tr></thead><tbody>${statsFourn}</tbody></table><h2>Détail des bons</h2><table><thead><tr><th>N° Bon</th><th>Date</th><th>Fournisseur</th><th>Convoyeur</th><th>Total</th><th>Encaissé</th><th>Reste</th></tr></thead><tbody>${rows}<tr class="total-row"><td colspan="4">TOTAUX</td><td style="text-align:right">${fmt(totalFactureMois)} F</td><td style="text-align:right">${fmt(totalEncaisseMois)} F</td><td style="text-align:right">${fmt(Math.max(0,totalResteMois))} F</td></tr></tbody></table><div class="signatures"><div class="sig">Signature Responsable</div><div class="sig">Cachet SIBEE</div></div><button class="print-btn" onclick="window.print()">🖨 Imprimer / Enregistrer en PDF</button></body></html>`;
       const blob=new Blob([html],{type:"text/html;charset=utf-8"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.target="_blank";a.rel="noopener";document.body.appendChild(a);a.click();setTimeout(()=>{document.body.removeChild(a);URL.revokeObjectURL(url);},1000);
     };
+
+    /* ── PRINT ANNUEL ── */
+    const printAnnuel = () => {
+      const lignesMois = moisDispos.filter(m=>m.nbBons>0).map(m=>`<tr><td><strong>${m.label} ${annee}</strong></td><td style="text-align:center">${m.nbBons}</td><td style="text-align:right">${fmt(m.facture)} F</td><td style="text-align:right;color:#1a6b3a">${fmt(m.encaisse)} F</td><td style="text-align:right;color:${m.reste>0?"#c0392b":"#1a6b3a"};font-weight:700">${fmt(Math.max(0,m.reste))} F</td></tr>`).join("");
+      const lignesFourn = fournAnnee.map(([nom,s])=>{const r=s.total-s.encaisse;return `<tr><td><strong>${nom}</strong></td><td style="text-align:center">${s.count}</td><td style="text-align:right">${fmt(s.total)} F</td><td style="text-align:right;color:#1a6b3a">${fmt(s.encaisse)} F</td><td style="text-align:right;color:${r>0?"#c0392b":"#1a6b3a"};font-weight:700">${fmt(Math.max(0,r))} F</td></tr>`;}).join("");
+      const dateGen=(new Date()).toLocaleDateString("fr-FR",{weekday:"long",day:"numeric",month:"long",year:"numeric",timeZone:"Africa/Abidjan"});
+      const html=`<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>Rapport Annuel SIBEE ${annee}</title><style>*{box-sizing:border-box;margin:0;padding:0;}body{font-family:Georgia,serif;color:#333;padding:24px;font-size:13px;}.header{text-align:center;padding-bottom:16px;border-bottom:3px solid #5C0D1A;margin-bottom:20px;}.logo{font-size:30px;font-weight:800;color:#5C0D1A;letter-spacing:4px;}.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:20px 0;}.kpi{background:#FAF3EE;border-left:4px solid #5C0D1A;padding:12px;border-radius:4px;}.kpi-val{font-size:17px;font-weight:800;color:#5C0D1A;}.kpi-label{font-size:10px;color:#8a6060;text-transform:uppercase;letter-spacing:1px;margin-top:4px;}.taux{color:#1a6b3a;}.h2{color:#5C0D1A;font-size:13px;margin:20px 0 8px;text-transform:uppercase;letter-spacing:1px;border-bottom:1px solid #D4B8B0;padding-bottom:6px;}table{width:100%;border-collapse:collapse;margin-bottom:20px;font-size:11px;}th{background:#5C0D1A;color:#EDD98A;padding:7px 10px;text-align:left;font-size:10px;text-transform:uppercase;}td{padding:7px 10px;border-bottom:1px solid #D4B8B0;}tr:nth-child(even) td{background:#FDF0ED;}.total-row td{background:#5C0D1A!important;color:#EDD98A;font-weight:700;}.print-btn{margin-top:20px;padding:12px 28px;background:#5C0D1A;color:#EDD98A;border:none;border-radius:4px;cursor:pointer;font-size:14px;font-weight:700;width:100%;}@media print{.print-btn{display:none;}.kpis{grid-template-columns:repeat(2,1fr);}}</style></head><body><div class="header"><div class="logo">SIBEE</div><div style="font-size:10px;color:#8a6060;letter-spacing:3px;text-transform:uppercase;margin-top:4px;">Import-Export · Commerce de produits agricoles</div><div style="font-size:18px;color:#333;margin-top:12px;font-weight:600;">Rapport Annuel ${annee}</div><div style="font-size:11px;color:#8a6060;margin-top:4px;">Généré le ${dateGen}</div></div><div class="kpis"><div class="kpi"><div class="kpi-val">${bonsAnnee.length}</div><div class="kpi-label">Bons émis</div></div><div class="kpi"><div class="kpi-val">${fmt(totalFactureAnnee)} F</div><div class="kpi-label">Total facturé</div></div><div class="kpi"><div class="kpi-val">${fmt(totalEncaisseAnnee)} F</div><div class="kpi-label">Total encaissé</div></div><div class="kpi"><div class="kpi-val taux">${tauxRecouvrement}%</div><div class="kpi-label">Taux recouvrement</div></div></div><div class="h2">Activité mensuelle</div><table><thead><tr><th>Mois</th><th>Bons</th><th>Facturé</th><th>Encaissé</th><th>Reste</th></tr></thead><tbody>${lignesMois}<tr class="total-row"><td><strong>TOTAL ${annee}</strong></td><td style="text-align:center">${bonsAnnee.length}</td><td style="text-align:right">${fmt(totalFactureAnnee)} F</td><td style="text-align:right">${fmt(totalEncaisseAnnee)} F</td><td style="text-align:right">${fmt(Math.max(0,totalResteAnnee))} F</td></tr></tbody></table><div class="h2">Top fournisseurs</div><table><thead><tr><th>Fournisseur</th><th>Bons</th><th>Total</th><th>Encaissé</th><th>Reste</th></tr></thead><tbody>${lignesFourn}</tbody></table><button class="print-btn" onclick="window.print()">🖨 Imprimer / Enregistrer en PDF</button></body></html>`;
+      const blob=new Blob([html],{type:"text/html;charset=utf-8"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.target="_blank";a.rel="noopener";document.body.appendChild(a);a.click();setTimeout(()=>{document.body.removeChild(a);URL.revokeObjectURL(url);},1000);
+    };
+
+    const tabStyle = (active) => ({ padding:"9px 20px", background:active?C.dark:"transparent", color:active?C.goldL:C.muted, border:`1px solid ${active?C.dark:C.border}`, borderRadius:4, fontFamily:"inherit", fontSize:13, fontWeight:700, cursor:"pointer", transition:"all .15s" });
+
     return React.createElement("div", { style:wrap },
-      React.createElement("div", { style:{ marginBottom:22, display:"flex", alignItems:"flex-start", justifyContent:"space-between", flexWrap:"wrap", gap:12 } },
+      /* ── En-tête ── */
+      React.createElement("div", { style:{ marginBottom:20, display:"flex", alignItems:"flex-start", justifyContent:"space-between", flexWrap:"wrap", gap:12 } },
         React.createElement("div", null,
-          React.createElement("div", { style:{ fontFamily:"'Playfair Display',Georgia,serif", fontSize:"clamp(20px,5vw,28px)", color:C.dark, fontWeight:700 } }, "Rapport mensuel"),
+          React.createElement("div", { style:{ fontFamily:"'Playfair Display',Georgia,serif", fontSize:"clamp(20px,5vw,28px)", color:C.dark, fontWeight:700 } }, "Rapports"),
           React.createElement("div", { style:{ fontSize:11, color:C.muted, letterSpacing:1.5, textTransform:"uppercase", marginTop:4 } }, "Statistiques & impression PDF")
         ),
-        React.createElement("div", { style:{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" } },
+        /* Onglets */
+        React.createElement("div", { style:{ display:"flex", gap:6, background:C.white, padding:4, borderRadius:5, border:`1px solid ${C.border}` } },
+          React.createElement("button", { onClick:()=>setOnglet("mensuel"), style:tabStyle(onglet==="mensuel") }, "📅 Mensuel"),
+          React.createElement("button", { onClick:()=>setOnglet("annuel"), style:tabStyle(onglet==="annuel") }, "📆 Annuel")
+        )
+      ),
+
+      /* ════════ VUE MENSUELLE ════════ */
+      onglet==="mensuel" && React.createElement(React.Fragment, null,
+        React.createElement("div", { style:{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap", marginBottom:18 } },
           React.createElement("input", { type:"month", value:mois, onChange:(e)=>setMois(e.target.value), style:{ padding:"9px 13px", border:`1.5px solid ${C.border}`, borderRadius:4, fontFamily:"inherit", fontSize:13, background:C.white, outline:"none" } }),
-          React.createElement("button", { onClick:printRapport, disabled:!bonsMois.length, style:{ padding:"10px 20px", background:bonsMois.length?C.dark:"#ccc", color:C.goldL, border:"none", borderRadius:4, fontFamily:"inherit", fontSize:13, fontWeight:700, cursor:bonsMois.length?"pointer":"not-allowed", boxShadow:bonsMois.length?"0 3px 12px rgba(92,13,26,0.2)":"none" } }, "🖨 Imprimer PDF")
-        )
-      ),
-      React.createElement("div", { className:"dash-grid", style:{ marginBottom:20 } },
-        [{icon:"📋",val:bonsMois.length,label:"Bons émis",sub:nomMois,alert:false},{icon:"💰",val:fmt(totalFacture)+" F",label:"Total facturé",sub:"ce mois",alert:false},{icon:"✅",val:fmt(totalEncaisse)+" F",label:"Total encaissé",sub:"avances & paiements",alert:false},{icon:"⏳",val:fmt(Math.max(0,totalReste2))+" F",label:"Reste à encaisser",alert:totalReste2>0}].map((k) =>
-          React.createElement("div", { key:k.label, className:`kpi-card${k.alert?" alert":""}`, style:{ borderLeftColor:k.alert?C.warn:C.dark } },
-            React.createElement("div", { style:{ fontSize:24, marginBottom:6 } }, k.icon),
-            React.createElement("div", { style:{ fontWeight:800, fontSize:"clamp(14px,3vw,18px)", color:k.alert?C.warn:C.dark } }, k.val),
-            React.createElement("div", { style:{ fontSize:10, color:C.muted, marginTop:5, textTransform:"uppercase", letterSpacing:1.2 } }, k.label),
-            k.sub&&React.createElement("div", { style:{ fontSize:10, color:C.muted, marginTop:2 } }, k.sub)
+          React.createElement("button", { onClick:printRapport, disabled:!bonsMois.length, style:{ padding:"10px 20px", background:bonsMois.length?C.dark:"#ccc", color:C.goldL, border:"none", borderRadius:4, fontFamily:"inherit", fontSize:13, fontWeight:700, cursor:bonsMois.length?"pointer":"not-allowed" } }, "🖨 Imprimer PDF")
+        ),
+        React.createElement("div", { className:"dash-grid", style:{ marginBottom:20 } },
+          [{icon:"📋",val:bonsMois.length,label:"Bons émis",sub:nomMois,alert:false},{icon:"💰",val:fmt(totalFactureMois)+" F",label:"Total facturé",alert:false},{icon:"✅",val:fmt(totalEncaisseMois)+" F",label:"Encaissé",alert:false},{icon:"⏳",val:fmt(Math.max(0,totalResteMois))+" F",label:"Reste",alert:totalResteMois>0}].map((k) =>
+            React.createElement("div", { key:k.label, className:`kpi-card${k.alert?" alert":""}`, style:{ borderLeftColor:k.alert?C.warn:C.dark } },
+              React.createElement("div", { style:{ fontSize:24, marginBottom:6 } }, k.icon),
+              React.createElement("div", { style:{ fontWeight:800, fontSize:"clamp(14px,3vw,18px)", color:k.alert?C.warn:C.dark } }, k.val),
+              React.createElement("div", { style:{ fontSize:10, color:C.muted, marginTop:5, textTransform:"uppercase", letterSpacing:1.2 } }, k.label),
+              k.sub&&React.createElement("div", { style:{ fontSize:10, color:C.muted, marginTop:2 } }, k.sub)
+            )
           )
-        )
-      ),
-      React.createElement("div", { style:cardS },
-        React.createElement("div", { style:secHead() }, "👥 Récapitulatif par fournisseur"),
-        bonsMois.length===0
-          ? React.createElement("div", { style:{ padding:"32px", textAlign:"center", color:C.muted, fontSize:13 } }, "Aucun bon pour ", nomMois)
-          : React.createElement("div", { style:{ overflowX:"auto" } },
-              React.createElement("table", { style:{ width:"100%", borderCollapse:"collapse", fontSize:13 } },
-                React.createElement("thead", null,
-                  React.createElement("tr", { style:{ background:C.dark } },
+        ),
+        React.createElement("div", { style:cardS },
+          React.createElement("div", { style:secHead() }, "👥 Récapitulatif par fournisseur"),
+          bonsMois.length===0
+            ? React.createElement("div", { style:{ padding:"32px", textAlign:"center", color:C.muted, fontSize:13 } }, "Aucun bon pour ", nomMois)
+            : React.createElement("div", { style:{ overflowX:"auto" } },
+                React.createElement("table", { style:{ width:"100%", borderCollapse:"collapse", fontSize:13 } },
+                  React.createElement("thead", null, React.createElement("tr", { style:{ background:C.dark } },
                     ["Fournisseur","Bons","Total","Encaissé","Reste","Statut"].map((h) =>
                       React.createElement("th", { key:h, style:{ padding:"10px 14px", textAlign:"left", color:C.goldL, fontWeight:700, fontSize:11, textTransform:"uppercase", letterSpacing:1, whiteSpace:"nowrap" } }, h)
                     )
+                  )),
+                  React.createElement("tbody", null,
+                    Object.entries(bonsMois.reduce((acc,b)=>{const k=b.fournisseur||"—";const t=totQ(b.qualities||DEF_Q,b.rows),av=totAv(b);if(!acc[k])acc[k]={count:0,total:0,encaisse:0};acc[k].count++;acc[k].total+=t;acc[k].encaisse+=av;return acc;},{})).sort((a,b2)=>b2[1].total-a[1].total).map(([nom,s],i)=>{
+                      const reste2=s.total-s.encaisse;
+                      return React.createElement("tr", { key:nom, style:{ background:i%2===0?C.white:C.alt } },
+                        React.createElement("td", { style:{ padding:"10px 14px", fontWeight:700, color:C.dark } }, nom),
+                        React.createElement("td", { style:{ padding:"10px 14px", color:C.muted, textAlign:"center" } }, s.count),
+                        React.createElement("td", { style:{ padding:"10px 14px", fontWeight:700 } }, fmt(s.total), " F"),
+                        React.createElement("td", { style:{ padding:"10px 14px", color:"#1a6b3a", fontWeight:600 } }, fmt(s.encaisse), " F"),
+                        React.createElement("td", { style:{ padding:"10px 14px", color:reste2>0?C.warn:"#1a6b3a", fontWeight:700 } }, fmt(Math.max(0,reste2)), " F"),
+                        React.createElement("td", { style:{ padding:"10px 14px" } }, React.createElement("span", { className:`chip ${reste2<=0?"chip-ok":"chip-warn"}` }, reste2<=0?"✅ Soldé":"⏳ En attente"))
+                      );
+                    })
                   )
-                ),
-                React.createElement("tbody", null,
-                  Object.entries(bonsMois.reduce((acc,b)=>{const k=b.fournisseur||"—";const t=totQ(b.qualities||DEF_Q,b.rows),av=totAv(b);if(!acc[k])acc[k]={count:0,total:0,encaisse:0};acc[k].count++;acc[k].total+=t;acc[k].encaisse+=av;return acc;},{})).sort((a,b)=>b[1].total-a[1].total).map(([nom,s],i)=>{
-                    const reste2=s.total-s.encaisse;
-                    return React.createElement("tr", { key:nom, style:{ background:i%2===0?C.white:C.alt } },
-                      React.createElement("td", { style:{ padding:"10px 14px", fontWeight:700, color:C.dark } }, nom),
-                      React.createElement("td", { style:{ padding:"10px 14px", color:C.muted, textAlign:"center" } }, s.count),
-                      React.createElement("td", { style:{ padding:"10px 14px", fontWeight:700 } }, fmt(s.total), " F"),
-                      React.createElement("td", { style:{ padding:"10px 14px", color:"#1a6b3a", fontWeight:600 } }, fmt(s.encaisse), " F"),
-                      React.createElement("td", { style:{ padding:"10px 14px", color:reste2>0?C.warn:"#1a6b3a", fontWeight:700 } }, fmt(Math.max(0,reste2)), " F"),
-                      React.createElement("td", { style:{ padding:"10px 14px" } },
-                        React.createElement("span", { className:`chip ${reste2<=0?"chip-ok":"chip-warn"}` }, reste2<=0?"✅ Soldé":"⏳ En attente")
-                      )
-                    );
-                  })
                 )
               )
+        )
+      ),
+
+      /* ════════ VUE ANNUELLE ════════ */
+      onglet==="annuel" && React.createElement(React.Fragment, null,
+        /* Sélecteur année + bouton print */
+        React.createElement("div", { style:{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap", marginBottom:18 } },
+          React.createElement("select", { value:annee, onChange:(e)=>setAnnee(e.target.value), style:{ padding:"9px 13px", border:`1.5px solid ${C.border}`, borderRadius:4, fontFamily:"inherit", fontSize:13, background:C.white, outline:"none", fontWeight:700, color:C.dark } },
+            Array.from({length:5},(_,i)=>String((new Date()).getFullYear()-i)).map((y) =>
+              React.createElement("option", { key:y, value:y }, y)
             )
+          ),
+          React.createElement("button", { onClick:printAnnuel, disabled:!bonsAnnee.length, style:{ padding:"10px 20px", background:bonsAnnee.length?C.dark:"#ccc", color:C.goldL, border:"none", borderRadius:4, fontFamily:"inherit", fontSize:13, fontWeight:700, cursor:bonsAnnee.length?"pointer":"not-allowed" } }, "🖨 Rapport annuel PDF")
+        ),
+        /* KPI annuels */
+        React.createElement("div", { className:"dash-grid", style:{ marginBottom:20 } },
+          [{icon:"📋",val:bonsAnnee.length,label:"Bons émis",alert:false},{icon:"💰",val:fmt(totalFactureAnnee)+" F",label:"Total facturé",alert:false},{icon:"✅",val:fmt(totalEncaisseAnnee)+" F",label:"Encaissé",alert:false},{icon:"📈",val:tauxRecouvrement+"%",label:"Taux recouvrement",alert:tauxRecouvrement<70}].map((k) =>
+            React.createElement("div", { key:k.label, className:`kpi-card${k.alert?" alert":""}`, style:{ borderLeftColor:k.alert?C.warn:"#1a6b3a" } },
+              React.createElement("div", { style:{ fontSize:24, marginBottom:6 } }, k.icon),
+              React.createElement("div", { style:{ fontWeight:800, fontSize:"clamp(14px,3vw,18px)", color:k.alert?C.warn:C.dark } }, k.val),
+              React.createElement("div", { style:{ fontSize:10, color:C.muted, marginTop:5, textTransform:"uppercase", letterSpacing:1.2 } }, k.label)
+            )
+          )
+        ),
+        /* Graphe barres mensuelles */
+        React.createElement("div", { style:cardS },
+          React.createElement("div", { style:secHead() }, "📊 Activité mensuelle — ", annee),
+          React.createElement("div", { style:{ padding:"20px 16px" } },
+            bonsAnnee.length===0
+              ? React.createElement("div", { style:{ textAlign:"center", color:C.muted, padding:"24px", fontSize:13 } }, "Aucun bon pour ", annee)
+              : React.createElement("div", { style:{ display:"flex", alignItems:"flex-end", gap:"clamp(4px,1vw,10px)", height:140, paddingBottom:24, position:"relative" } },
+                  moisDispos.map((m) => {
+                    const pct = maxBarAnnee>0 ? (m.facture/maxBarAnnee)*100 : 0;
+                    const pctEnc = m.facture>0 ? (m.encaisse/m.facture)*100 : 0;
+                    return React.createElement("div", { key:m.key, style:{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:3, cursor:m.nbBons>0?"pointer":"default" }, onClick:()=>m.nbBons>0&&(setOnglet("mensuel"),setMois(m.key)) },
+                      m.nbBons>0&&React.createElement("div", { style:{ fontSize:9, color:C.muted, fontWeight:600 } }, m.nbBons),
+                      React.createElement("div", { style:{ width:"100%", position:"relative", height:`${Math.max(pct*1.1,4)}%`, minHeight:m.nbBons>0?8:3, background:C.bg2, borderRadius:"3px 3px 0 0", overflow:"hidden", transition:"height .3s ease" } },
+                        React.createElement("div", { style:{ position:"absolute", bottom:0, left:0, right:0, height:`${pctEnc}%`, background:"#1a6b3a", opacity:.8 } }),
+                        React.createElement("div", { style:{ position:"absolute", bottom:`${pctEnc}%`, left:0, right:0, top:0, background:C.dark, opacity:.7 } })
+                      ),
+                      React.createElement("div", { style:{ fontSize:9, color:C.muted, marginTop:3, textTransform:"capitalize", textAlign:"center" } }, m.label)
+                    );
+                  })
+                ),
+            React.createElement("div", { style:{ display:"flex", gap:16, justifyContent:"center", marginTop:4, flexWrap:"wrap" } },
+              React.createElement("div", { style:{ display:"flex", alignItems:"center", gap:5, fontSize:11, color:C.muted } }, React.createElement("div", { style:{ width:12, height:12, background:C.dark, borderRadius:2, opacity:.7 } }), "Facturé"),
+              React.createElement("div", { style:{ display:"flex", alignItems:"center", gap:5, fontSize:11, color:C.muted } }, React.createElement("div", { style:{ width:12, height:12, background:"#1a6b3a", borderRadius:2, opacity:.8 } }), "Encaissé"),
+              React.createElement("div", { style:{ fontSize:11, color:C.muted } }, "— Cliquez sur une barre pour voir le mois")
+            )
+          )
+        ),
+        /* Taux de recouvrement */
+        React.createElement("div", { style:{ ...cardS, marginTop:16 } },
+          React.createElement("div", { style:secHead() }, "📈 Taux de recouvrement mensuel"),
+          React.createElement("div", { style:{ padding:"16px 20px" } },
+            moisDispos.filter(m=>m.nbBons>0).length===0
+              ? React.createElement("div", { style:{ textAlign:"center", color:C.muted, padding:"16px", fontSize:13 } }, "Aucune donnée")
+              : moisDispos.filter(m=>m.nbBons>0).map((m) => {
+                  const taux = m.facture>0 ? Math.round((m.encaisse/m.facture)*100) : 0;
+                  return React.createElement("div", { key:m.key, style:{ marginBottom:12 } },
+                    React.createElement("div", { style:{ display:"flex", justifyContent:"space-between", marginBottom:4 } },
+                      React.createElement("span", { style:{ fontSize:12, fontWeight:600, color:C.dark } }, m.label, " ", annee, " ", React.createElement("span", { style:{ fontSize:11, color:C.muted } }, "(", m.nbBons, " bon", m.nbBons!==1?"s":"", ")")),
+                      React.createElement("span", { style:{ fontSize:12, fontWeight:800, color:taux>=80?"#1a6b3a":taux>=50?C.goldD:C.warn } }, taux, "%")
+                    ),
+                    React.createElement("div", { style:{ height:8, background:C.bg2, borderRadius:4, overflow:"hidden" } },
+                      React.createElement("div", { style:{ height:"100%", width:taux+"%", background:taux>=80?"#1a6b3a":taux>=50?C.gold:C.warn, borderRadius:4, transition:"width .4s ease" } })
+                    )
+                  );
+                })
+          )
+        ),
+        /* Top fournisseurs annuels */
+        React.createElement("div", { style:{ ...cardS, marginTop:16 } },
+          React.createElement("div", { style:secHead() }, "👥 Top fournisseurs — ", annee),
+          fournAnnee.length===0
+            ? React.createElement("div", { style:{ padding:"24px", textAlign:"center", color:C.muted, fontSize:13 } }, "Aucun bon pour ", annee)
+            : React.createElement("div", { style:{ overflowX:"auto" } },
+                React.createElement("table", { style:{ width:"100%", borderCollapse:"collapse", fontSize:13 } },
+                  React.createElement("thead", null, React.createElement("tr", { style:{ background:C.dark } },
+                    ["#","Fournisseur","Bons","Total","Encaissé","Reste"].map((h) =>
+                      React.createElement("th", { key:h, style:{ padding:"10px 12px", textAlign:"left", color:C.goldL, fontWeight:700, fontSize:11, textTransform:"uppercase", letterSpacing:.8, whiteSpace:"nowrap" } }, h)
+                    )
+                  )),
+                  React.createElement("tbody", null,
+                    fournAnnee.map(([nom,s],i) => {
+                      const r=s.total-s.encaisse;
+                      return React.createElement("tr", { key:nom, style:{ background:i%2===0?C.white:C.alt } },
+                        React.createElement("td", { style:{ padding:"9px 12px", fontWeight:800, color:i===0?C.gold:C.muted, fontSize:i===0?15:12 } }, i===0?"🥇":i===1?"🥈":i===2?"🥉":i+1),
+                        React.createElement("td", { style:{ padding:"9px 12px", fontWeight:700, color:C.dark } }, nom),
+                        React.createElement("td", { style:{ padding:"9px 12px", color:C.muted, textAlign:"center" } }, s.count),
+                        React.createElement("td", { style:{ padding:"9px 12px", fontWeight:700 } }, fmt(s.total), " F"),
+                        React.createElement("td", { style:{ padding:"9px 12px", color:"#1a6b3a", fontWeight:600 } }, fmt(s.encaisse), " F"),
+                        React.createElement("td", { style:{ padding:"9px 12px" } }, React.createElement("span", { className:`chip ${r<=0?"chip-ok":"chip-warn"}` }, r<=0?"✅":fmt(Math.max(0,r))+" F"))
+                      );
+                    })
+                  )
+                )
+              )
+        )
       )
     );
   }
@@ -1381,19 +1738,23 @@ function App() {
     previewBon && PreviewModal(),
     pwModal && PwModal(),
     printModal && PrintModal(),
-    React.createElement("div", { style:{ minHeight:"100vh", background:C.bg, fontFamily:"'DM Sans',Georgia,sans-serif", color:C.text } },
-      /* ── NAV ── */
+    quickPayModal && React.createElement(QuickPayModal, null),
+    impayesView && ImpayesModal(),
+    leaveConfirm && LeaveConfirmModal(),
+    React.createElement("div", { style:{ minHeight:"100vh", background:C.bg, fontFamily:"'DM Sans',Georgia,sans-serif", color:C.text, paddingBottom: isMobile?"70px":0 } },
+      /* ── NAV HAUT ── */
       React.createElement("nav", { style:{ background:C.dark, display:"flex", alignItems:"center", justifyContent:"space-between", padding:"0 clamp(8px,3vw,24px)", height:"clamp(52px,8vw,62px)", boxShadow:"0 2px 20px rgba(92,13,26,0.35)", position:"sticky", top:0, zIndex:100 } },
         React.createElement("div", { style:{ display:"flex", alignItems:"center", gap:"clamp(8px,2vw,22px)" } },
           React.createElement("div", null,
             React.createElement("div", { style:{ fontFamily:"'Playfair Display',Georgia,serif", color:C.goldL, fontSize:"clamp(14px,3vw,20px)", letterSpacing:"clamp(2px,0.5vw,3px)", fontWeight:700 } }, "SIBEE"),
             React.createElement("div", { className:"nav-sub" }, "Import-Export")
           ),
-          React.createElement("div", { style:{ display:"flex", gap:2 } },
+          /* Nav items — cachés sur mobile (remplacés par la barre du bas) */
+          !isMobile && React.createElement("div", { style:{ display:"flex", gap:2 } },
             navItems.map((n) =>
               React.createElement("button", {
                 key:n.id,
-                onClick:()=>setView(n.id),
+                onClick:()=> view==="form" ? handleLeaveForm(n.id) : setView(n.id),
                 className:"nav-btn",
                 style:{ background:view===n.id?C.gold:"transparent", color:view===n.id?C.dark:C.goldL, boxShadow:view===n.id?"0 2px 10px rgba(201,151,61,0.3)":"none" }
               },
@@ -1405,26 +1766,57 @@ function App() {
           )
         ),
         React.createElement("div", { style:{ display:"flex", alignItems:"center", gap:8 } },
+          impayesAnciens.length>0 && React.createElement("button", { onClick:()=>setImpayesView(true), style:{ padding:"5px 11px", background:"rgba(184,48,37,0.2)", border:`1px solid ${C.warn}`, borderRadius:3, cursor:"pointer", fontSize:11, color:C.warn, fontWeight:700, display:"flex", alignItems:"center", gap:5, whiteSpace:"nowrap" } },
+            React.createElement("span", { style:{ width:7, height:7, borderRadius:"50%", background:C.warn, display:"inline-block", animation:"pulse .8s infinite" } }),
+            impayesAnciens.length, " retard", impayesAnciens.length>1?"s":""
+          ),
           React.createElement(Btn, { v:"gold", sm:true, onClick:handleNew }, "+ Bon"),
           React.createElement("div", { style:{ padding:"4px 10px", background:syncStatus==="error"?"rgba(184,48,37,0.15)":syncStatus==="loading"||syncStatus==="saving"?"rgba(201,151,61,0.15)":"rgba(26,107,58,0.15)", border:`1px solid ${syncStatus==="error"?C.warn:syncStatus==="loading"||syncStatus==="saving"?C.gold:"#4CAF50"}`, borderRadius:3, fontSize:10, fontWeight:700, color:syncStatus==="error"?C.warn:syncStatus==="loading"||syncStatus==="saving"?C.goldD:"#4CAF50", whiteSpace:"nowrap", display:"flex", alignItems:"center", gap:4 } },
-            syncStatus==="loading"?"⏳ Chargement":syncStatus==="saving"?"💾 Sauvegarde":syncStatus==="error"?"❌ Hors ligne":"☁️ Sync"
+            syncStatus==="loading"?"⏳":syncStatus==="saving"?"💾":syncStatus==="error"?"❌ Hors ligne":"☁️"
           ),
-          React.createElement("button", { onClick:()=>setPwModal(true), title:"Changer le mot de passe", style:{ padding:"6px 10px", background:"rgba(255,255,255,0.1)", border:"1px solid rgba(255,255,255,0.18)", borderRadius:3, cursor:"pointer", fontSize:12, color:C.goldL, transition:"background .15s" } }, "🔑"),
-          React.createElement("button", { onClick:()=>{ setIsAuth(false); localStorage.removeItem("sibee-auth"); }, title:"Se déconnecter", style:{ padding:"6px 10px", background:"rgba(255,255,255,0.1)", border:"1px solid rgba(255,255,255,0.18)", borderRadius:3, cursor:"pointer", fontSize:12, color:C.goldL, transition:"background .15s" } }, "🔒")
+          React.createElement("button", { onClick:()=>setPwModal(true), title:"Changer le mot de passe", style:{ padding:"6px 10px", background:"rgba(255,255,255,0.1)", border:"1px solid rgba(255,255,255,0.18)", borderRadius:3, cursor:"pointer", fontSize:12, color:C.goldL } }, "🔑"),
+          React.createElement("button", { onClick:()=>{ setIsAuth(false); localStorage.removeItem("sibee-auth"); }, title:"Se déconnecter", style:{ padding:"6px 10px", background:"rgba(255,255,255,0.1)", border:"1px solid rgba(255,255,255,0.18)", borderRadius:3, cursor:"pointer", fontSize:12, color:C.goldL } }, "🔒")
         )
       ),
-      /* Breadcrumb formulaire */
+      /* Breadcrumb formulaire — avec protection */
       view==="form"&&React.createElement("div", { style:{ background:C.main, padding:"6px 16px", fontSize:11, color:C.goldL, display:"flex", alignItems:"center", gap:6 } },
-        React.createElement("span", { style:{ cursor:"pointer", opacity:.7 }, onClick:()=>setView("list") }, "Bons"),
+        React.createElement("span", { style:{ cursor:"pointer", opacity:.7, textDecoration:"underline" }, onClick:()=>handleLeaveForm("list") }, "← Bons"),
         React.createElement("span", { style:{ margin:"0 4px", opacity:.5 } }, "›"),
-        React.createElement("span", null, editId?"Modifier":"Nouveau bon")
+        React.createElement("span", null, editId?"Modifier le bon":"Nouveau bon"),
+        formDirty && React.createElement("span", { style:{ marginLeft:"auto", fontSize:10, color:C.gold, fontStyle:"italic" } }, "● Modifications non sauvegardées")
       ),
       /* Views */
       view==="dashboard" && Dashboard(),
       view==="form" && FormView(),
       view==="list" && ListView(),
       view==="rapport" && RapportView(),
-      view==="fournisseurs" && React.createElement(FournisseursView, { fournisseurs, setFournisseurs, bons, saveF, toast })
+      view==="fournisseurs" && React.createElement(FournisseursView, { fournisseurs, setFournisseurs, bons, saveF, toast }),
+
+      /* ── NAV BAS MOBILE ── */
+      isMobile && React.createElement("nav", { style:{ position:"fixed", bottom:0, left:0, right:0, height:62, background:C.dark, display:"flex", alignItems:"stretch", boxShadow:"0 -4px 20px rgba(0,0,0,0.3)", zIndex:200, borderTop:`1px solid rgba(255,255,255,0.08)` } },
+        navItems.map((n) => {
+          const active = view===n.id;
+          return React.createElement("button", {
+            key:n.id,
+            onClick:()=> view==="form" ? handleLeaveForm(n.id) : setView(n.id),
+            style:{ flex:1, background:"none", border:"none", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:3, cursor:"pointer", position:"relative",
+              borderTop: active ? `2px solid ${C.gold}` : "2px solid transparent",
+              transition:"all .15s" }
+          },
+            React.createElement("span", { style:{ fontSize:20, lineHeight:1 } }, n.icon),
+            React.createElement("span", { style:{ fontSize:9, color:active?C.gold:C.goldL+"99", fontWeight:active?700:500, letterSpacing:.5, textTransform:"uppercase" } }, n.label.split(" ")[0]),
+            (n.id==="list"&&notifications.length>0||n.notif) && React.createElement("span", { style:{ position:"absolute", top:8, right:"calc(50% - 14px)", width:7, height:7, background:C.warn, borderRadius:"50%", border:"1.5px solid "+C.dark } })
+          );
+        }),
+        /* Bouton + Nouveau Bon centré */
+        React.createElement("button", {
+          onClick:handleNew,
+          style:{ flex:1, background:"none", border:"none", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:2, cursor:"pointer" }
+        },
+          React.createElement("div", { style:{ width:40, height:40, background:C.gold, borderRadius:"50%", display:"flex", alignItems:"center", justifyContent:"center", fontSize:22, fontWeight:700, color:C.dark, boxShadow:"0 3px 12px rgba(201,151,61,0.4)", marginTop:-18 } }, "+"),
+          React.createElement("span", { style:{ fontSize:9, color:C.goldL+"99", fontWeight:500, letterSpacing:.5, textTransform:"uppercase" } }, "Nouveau")
+        )
+      )
     )
   );
 }
