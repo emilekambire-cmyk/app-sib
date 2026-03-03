@@ -539,7 +539,7 @@ function App() {
         if (!rb.ok) throw new Error("bons HTTP " + rb.status);
         const db = await rb.json();
         if (db && db.length > 0) setBons(db.map((r) => r.data));
-        const rf = await sbFetch("fournisseurs?select=nom,telephone");
+        // const rf = await sbFetch("fournisseurs?select=nom,telephone"); // Desactive - pas de donnees pre-enregistrees
         if (rf.ok) { const df = await rf.json(); if (df && df.length > 0) setFournisseurs(df.map((r) => ({ nom: r.nom, telephone: r.telephone || "" }))); }
         const rc = await sbFetch("config?key=eq.qualities&select=value");
         if (rc.ok) { const dc = await rc.json(); if (dc && dc.length > 0 && dc[0].value) setQualities(dc[0].value); }
@@ -550,7 +550,11 @@ function App() {
         setSyncStatus("ok"); setTimeout(() => setSyncStatus(""), 3000);
       } catch (e) {
         console.error("Supabase load error:", e);
-        try { const raw = localStorage.getItem("sibee-data"); if (raw) { const d = JSON.parse(raw); if (d.bons) setBons(d.bons); if (d.qualities) setQualities(d.qualities); if (d.fournisseurs) setFournisseurs(d.fournisseurs); if (d.corbeilleF) setCorbeilleF(d.corbeilleF); if (d.corbeilleB) setCorbeilleB(d.corbeilleB); } } catch (e2) {}
+        try { const raw = localStorage.getItem("sibee-data"); if (raw) { const d = JSON.parse(raw); if (d.bons) setBons(d.bons); if (d.qualities) setQualities(d.qualities); /* fournisseurs pre-enregistres effaces */ setFournisseurs([]); if (d.corbeilleF) setCorbeilleF(d.corbeilleF); if (d.corbeilleB) setCorbeilleB(d.corbeilleB); } } catch (e2) {}
+        // Nettoyer fournisseurs du localStorage definitivement
+        try { const raw2=localStorage.getItem("sibee-data"); if(raw2){const d2=JSON.parse(raw2); d2.fournisseurs=[]; localStorage.setItem("sibee-data",JSON.stringify(d2));} } catch(e3) {}
+        // Nettoyer aussi les prix memorises
+        try { localStorage.removeItem("sibee-lastprices"); } catch(e4) {}
         setSyncStatus("error");
       }
     })();
@@ -622,13 +626,7 @@ function App() {
   function handleNew() {
     const num=genBonNum(bons);
     const base=newForm(qualities,num);
-    // Charger derniers prix mémorisés
-    try {
-      const lp=JSON.parse(localStorage.getItem("sibee-lastprices")||"{}");
-      if(Object.keys(lp).length) {
-        (qualities||[]).forEach(q=>{ if(lp[q.key]) base.rows[q.key]={...base.rows[q.key],prix:lp[q.key]}; });
-      }
-    } catch(e) {}
+    // Prix vides par defaut
     setForm(base); setEditId(null); setErrors({}); setFormDirty(false); setView("form");
   }
   function handleDuplicate(bon) {
@@ -667,8 +665,7 @@ function App() {
       const nl = [bon,...bons]; setBons(nl); saveB(nl); saveFourn(bon); bonForPrint=bon;
     }
     toast(editId ? "✅ Bon modifié avec succès !" : "✅ Bon enregistré avec succès !"); setPrintModal(bonForPrint); setFormDirty(false);
-    // Mémoriser les derniers prix par qualité
-    try { const lp={}; (form.qualities||[]).forEach(q=>{ const p=parseFloat(form.rows?.[q.key]?.prix); if(p>0) lp[q.key]=String(p); }); localStorage.setItem("sibee-lastprices", JSON.stringify(lp)); } catch(e) {}
+    // Prix non memorises
   }
   async function handleDelete(id) {
     const bon = bons.find((b) => b.id === id);
@@ -1058,7 +1055,7 @@ function App() {
         React.createElement("input", { style:{ ...numInp, border:`1.5px solid ${errors.rows?C.warn:"transparent"}`, borderRadius:2, padding:"2px 4px" }, type:"number", placeholder:"0", value:r.qty, onChange:(e)=>onChange("qty",e.target.value) })
       ),
       React.createElement("div", { style:{ padding:"6px 8px", display:"flex", alignItems:"center" } },
-        React.createElement("input", { style:numInp, type:"number", placeholder:"0", value:r.prix, onChange:(e)=>onChange("prix",e.target.value) })
+        React.createElement("input", { style:{ ...numInp, border:`1.5px solid ${errors.rows?"#e07b39":"#c8a84b"}`, borderRadius:2, padding:"2px 4px", background:"#fffdf5" }, type:"number", placeholder:"0", value:r.prix, onChange:(e)=>onChange("prix",e.target.value) })
       ),
       React.createElement("div", { style:{ padding:"10px 12px", textAlign:"center", fontWeight:700, color:C.dark, display:"flex", alignItems:"center", justifyContent:"center", fontSize:13 } },
         fmt(montR(r))
