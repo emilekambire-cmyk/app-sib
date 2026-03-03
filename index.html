@@ -46,8 +46,8 @@
   </script>
   <script>
 const APP_PASSWORD = "sibee2026";
-const SUPABASE_URL = "https://mztelboqyiazwwcbjwbh.supabase.co";
-const SUPABASE_KEY = "sb_publishable_deOt6lxJwIY4DN-RTL11Og_5JtTiKrA";
+const SUPABASE_URL = "https://sfysewyfflrmggdoldjl.supabase.co";
+const SUPABASE_KEY = "sb_publishable_8zEiM-LofQw0wJj8vgAM-g_tA3civbA";
 const sbFetch = (path, opts = {}) => fetch(SUPABASE_URL + "/rest/v1/" + path, {
   ...opts,
   headers: {
@@ -539,7 +539,7 @@ function App() {
         if (!rb.ok) throw new Error("bons HTTP " + rb.status);
         const db = await rb.json();
         if (db && db.length > 0) setBons(db.map((r) => r.data));
-        // const rf = await sbFetch("fournisseurs?select=nom,telephone"); // Desactive - pas de donnees pre-enregistrees
+        const rf = await sbFetch("fournisseurs?select=nom,telephone");
         if (rf.ok) { const df = await rf.json(); if (df && df.length > 0) setFournisseurs(df.map((r) => ({ nom: r.nom, telephone: r.telephone || "" }))); }
         const rc = await sbFetch("config?key=eq.qualities&select=value");
         if (rc.ok) { const dc = await rc.json(); if (dc && dc.length > 0 && dc[0].value) setQualities(dc[0].value); }
@@ -550,11 +550,7 @@ function App() {
         setSyncStatus("ok"); setTimeout(() => setSyncStatus(""), 3000);
       } catch (e) {
         console.error("Supabase load error:", e);
-        try { const raw = localStorage.getItem("sibee-data"); if (raw) { const d = JSON.parse(raw); if (d.bons) setBons(d.bons); if (d.qualities) setQualities(d.qualities); /* fournisseurs pre-enregistres effaces */ setFournisseurs([]); if (d.corbeilleF) setCorbeilleF(d.corbeilleF); if (d.corbeilleB) setCorbeilleB(d.corbeilleB); } } catch (e2) {}
-        // Nettoyer fournisseurs du localStorage definitivement
-        try { const raw2=localStorage.getItem("sibee-data"); if(raw2){const d2=JSON.parse(raw2); d2.fournisseurs=[]; localStorage.setItem("sibee-data",JSON.stringify(d2));} } catch(e3) {}
-        // Nettoyer aussi les prix memorises
-        try { localStorage.removeItem("sibee-lastprices"); } catch(e4) {}
+        try { const raw = localStorage.getItem("sibee-data"); if (raw) { const d = JSON.parse(raw); if (d.bons) setBons(d.bons); if (d.qualities) setQualities(d.qualities); if (d.corbeilleF) setCorbeilleF(d.corbeilleF); if (d.corbeilleB) setCorbeilleB(d.corbeilleB); } } catch (e2) {}
         setSyncStatus("error");
       }
     })();
