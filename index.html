@@ -220,7 +220,7 @@ const Alert = ({ type = "info", children, onClose }) => {
    Ses propres useState → DOIT être un vrai composant React
    rendu via React.createElement, jamais appelé en direct.
 ──────────────────────────────────────────────────────────── */
-function FournisseursView({ fournisseurs, setFournisseurs, bons, saveF, toast, corbeilleF, saveCorbeilleF }) {
+function FournisseursView({ fournisseurs, setFournisseurs, bons, setBons, saveF, saveB, toast, corbeilleF, saveCorbeilleF, corbeilleB, saveCorbeilleB }) {
   const [fSearch, setFSearch] = React.useState("");
   const [fSort,   setFSort]   = React.useState("nom-az");
   const [editFourn, setEditFourn] = React.useState(null);
@@ -267,11 +267,29 @@ function FournisseursView({ fournisseurs, setFournisseurs, bons, saveF, toast, c
   const confirmDeleteFourn = () => {
     if (!deleteConfirm) return;
     const fourn = fournisseurs.find((f) => f.id === deleteConfirm.id);
+    const nomFourn = fourn?.nom || "";
+    // Supprimer le fournisseur de la liste
     const nl = fournisseurs.filter((f) => f.id !== deleteConfirm.id);
     const newCorbeille = [...(corbeilleF||[]), { ...fourn, deletedAt: now() }];
     setFournisseurs(nl); saveF(nl);
     saveCorbeilleF(newCorbeille);
-    toast("Déplacé en corbeille. Restauration possible.", "warn");
+    // Supprimer aussi TOUS les bons liés à ce fournisseur
+    if (nomFourn && bons && setBons && saveB) {
+      const bonsLies = bons.filter((b) => b.fournisseur === nomFourn);
+      const bonsRestes = bons.filter((b) => b.fournisseur !== nomFourn);
+      if (bonsLies.length > 0) {
+        // Mettre les bons en corbeille aussi
+        const newCorbeilleB = [...(corbeilleB||[]), ...bonsLies.map((b) => ({ ...b, deletedAt: now() }))];
+        setBons(bonsRestes);
+        saveB(bonsRestes);
+        saveCorbeilleB(newCorbeilleB);
+        toast("Fournisseur + " + bonsLies.length + " bon(s) supprimés partout.", "warn");
+      } else {
+        toast("Fournisseur supprimé partout.", "warn");
+      }
+    } else {
+      toast("Déplacé en corbeille. Restauration possible.", "warn");
+    }
     setDeleteConfirm(null);
   };
   const restoreFourn = (id) => {
@@ -309,7 +327,7 @@ function FournisseursView({ fournisseurs, setFournisseurs, bons, saveF, toast, c
         ),
         React.createElement("div", { style:{ padding:"16px 24px", background:C.bg, borderBottom:`1px solid ${C.border}`, textAlign:"center" } },
           React.createElement("div", { style:{ fontWeight:700, color:"#5C0D1A", fontSize:15 } }, deleteConfirm.nom),
-          React.createElement("div", { style:{ fontSize:12, color:C.muted, marginTop:8, lineHeight:1.6 } }, "Le fournisseur sera déplacé en corbeille.", React.createElement("br"), "Vous pourrez le restaurer à tout moment.")
+          React.createElement("div", { style:{ fontSize:12, color:C.muted, marginTop:8, lineHeight:1.6 } }, "Tous les bons liés à ce fournisseur seront aussi supprimés.", React.createElement("br"), "Le fournisseur et ses bons seront retirés partout sur le site.")
         ),
         React.createElement("div", { style:{ padding:"16px 24px", display:"flex", gap:10 } },
           React.createElement("button", { onClick:()=>setDeleteConfirm(null), style:{ flex:1, padding:"12px", background:"transparent", color:C.muted, border:`1.5px solid ${C.border}`, borderRadius:4, fontFamily:"inherit", fontSize:13, fontWeight:600, cursor:"pointer" } }, "Annuler"),
@@ -670,8 +688,21 @@ function App() {
     saveB(nl);
     const newCorbeilleB = [...corbeilleB, { ...bon, deletedAt: now() }];
     saveCorbeilleB(newCorbeilleB);
+    // Si ce fournisseur n'a plus aucun bon actif -> retirer de la liste fournisseurs aussi
+    if (bon?.fournisseur) {
+      const autresBons = nl.filter((b) => b.fournisseur === bon.fournisseur);
+      if (autresBons.length === 0) {
+        const nlF = fournisseurs.filter((f) => f.nom !== bon.fournisseur);
+        if (nlF.length !== fournisseurs.length) {
+          const fourn = fournisseurs.find((f) => f.nom === bon.fournisseur);
+          setFournisseurs(nlF); saveF(nlF);
+          const newCF = [...corbeilleF, { ...fourn, deletedAt: now() }];
+          saveCorbeilleF(newCF);
+        }
+      }
+    }
     setDeleteModal(null);
-    toast("🗑 Bon déplacé en corbeille.", "warn");
+    toast("🗑 Bon supprimé — fournisseur retiré si plus aucun bon.", "warn");
   }
   async function purgeOneBon(id) {
     try { await sbFetch("bons?id=eq."+id,{method:"DELETE",prefer:""}); } catch(e){}
@@ -925,10 +956,14 @@ function App() {
   const css = `
     @keyframes spin{to{transform:rotate(360deg)}}
     @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
-    @keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+    @keyframes fadeUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
     @keyframes fadeIn{from{opacity:0}to{opacity:1}}
     @keyframes slideIn{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:translateX(0)}}
-    @keyframes scaleIn{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:scale(1)}}
+    @keyframes scaleIn{from{opacity:0;transform:scale(.93)}to{opacity:1;transform:scale(1)}}
+    @keyframes modalIn{from{opacity:0;transform:scale(.88) translateY(24px)}to{opacity:1;transform:scale(1) translateY(0)}}
+    @keyframes overlayIn{from{opacity:0}to{opacity:1}}
+    @keyframes slideUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
+    @keyframes ringPulse{0%{box-shadow:0 0 0 0 rgba(201,151,61,0.5)}70%{box-shadow:0 0 0 10px rgba(201,151,61,0)}100%{box-shadow:0 0 0 0 rgba(201,151,61,0)}}
     *{box-sizing:border-box;margin:0;padding:0;}
     html,body{font-family:'Instrument Sans',system-ui,sans-serif;-webkit-text-size-adjust:100%;touch-action:manipulation;overflow-x:hidden;background:${C.bg};}
     input,button,select{font-family:'Instrument Sans',inherit;font-size:16px;}
@@ -2050,7 +2085,7 @@ function App() {
       view==="form" && FormView(),
       view==="list" && ListView(),
       view==="rapport" && RapportView(),
-      view==="fournisseurs" && React.createElement(FournisseursView, { fournisseurs, setFournisseurs, bons, saveF, toast, corbeilleF, saveCorbeilleF }),
+      view==="fournisseurs" && React.createElement(FournisseursView, { fournisseurs, setFournisseurs, bons, setBons, saveF, saveB, toast, corbeilleF, saveCorbeilleF, corbeilleB, saveCorbeilleB }),
 
       /* ── NAV BAS MOBILE ── */
       isMobile && React.createElement("nav", { style:{ position:"fixed", bottom:0, left:0, right:0, height:64, background:C.dark, display:"flex", alignItems:"stretch", boxShadow:"0 -1px 0 rgba(196,145,42,0.15), 0 -8px 32px rgba(0,0,0,0.4)", zIndex:200, borderTop:"1px solid rgba(196,145,42,0.1)" } },
